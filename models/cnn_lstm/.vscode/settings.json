@@ -1,0 +1,9 @@
+{
+    "editor.fontSize": 14,
+    "python.analysis.autoImportCompletions": false,
+    "code-runner.runInTerminal": true,
+    "python-envs.defaultEnvManager": "ms-python.python:conda",
+    "python-envs.defaultPackageManager": "ms-python.python:conda",
+    "python-envs.pythonProjects": [],
+}
+
