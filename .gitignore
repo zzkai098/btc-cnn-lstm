@@ -1,13 +1,9 @@
-# Data files (too large for GitHub)
 data/
 models/cnn_lstm/data/
 *.csv
 *.pth
-
-# macOS
 .DS_Store
-
-# Python
 __pycache__/
 *.pyc
 .ipynb_checkpoints/
+.vscode/
