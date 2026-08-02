@@ -18,8 +18,8 @@ while every other model turns negative.
 
 ## Contents
 
-[Results](#results) · [CNN–LSTM architecture](#cnnlstm-architecture) · [Feature pipeline](#feature-pipeline) ·
-[Data](#data) · [Signal and backtest](#signal-and-backtest) · [Running it](#running-it) · [Layout](#layout) · [Limitations](#limitations)
+[Results](#results) · [CNN–LSTM architecture](#cnnlstm-architecture) · [Signal and backtest](#signal-and-backtest) ·
+[Feature pipeline](#feature-pipeline) · [Data](#data) · [Running it](#running-it) · [Layout](#layout) · [Limitations](#limitations)
 
 ---
 
@@ -134,18 +134,24 @@ width, depth, dropout, batch size and sequence length. Best configuration:
 Training uses ~346k sequences with ~20k held out. The split is chronological and
 never shuffled, so no future bar can leak into training.
 
-![training and validation loss](docs/img/training_loss.png)
+---
 
-Worth being honest about this curve. Training loss falls steadily while **validation
-loss stays flat and noisy** — the model is fitting the training set without opening
-a meaningful gap on held-out data. That is the expected picture for minute-level
-return prediction, where the signal-to-noise ratio is tiny, and it is consistent with
-what the backtest shows: a 52.91% win rate is a real edge over a coin flip, but a
-thin one. A curve that dropped cleanly on both lines at this frequency would be more
-likely to indicate leakage than skill.
+## Signal and backtest
 
-(The hyperparameter-search log and this run report loss on different scales, so
-7.923 above and the ~84 here are not directly comparable numbers.)
+Predictions are continuous, so they are squashed through `tanh` into a position in
+`[-1, 1]`: the sign gives direction and the magnitude gives conviction, so position
+size scales with confidence instead of flipping between fully long and fully short.
+
+![trade signals](docs/img/trade_signals.png)
+
+`backtest_strategy` then applies an optional entry threshold (trade only when
+`|signal| > threshold`, suppressing low-conviction churn), computes turnover as the
+absolute change in position, and charges `turnover × cost_rate`. The two tables above
+are the same function called with `cost_rate = 0` and `cost_rate > 0`.
+
+The threshold is the one lever that matters once costs are real: raising it from 0 to
+0.6 cuts turnover sharply, which is why the cost-charged line in the backtest above
+uses it. Trading every marginal signal is what destroys the other four models.
 
 ---
 
@@ -213,25 +219,6 @@ The two model families use different history windows: ARIMA and the linear model
 load from 2020, the CNN–LSTM and XGBoost from 2025. The final backtest re-aligns
 every model's signals onto one common index, so the comparison above is still
 same-period.
-
----
-
-## Signal and backtest
-
-Predictions are continuous, so they are squashed through `tanh` into a position in
-`[-1, 1]`: the sign gives direction and the magnitude gives conviction, so position
-size scales with confidence instead of flipping between fully long and fully short.
-
-![trade signals](docs/img/trade_signals.png)
-
-`backtest_strategy` then applies an optional entry threshold (trade only when
-`|signal| > threshold`, suppressing low-conviction churn), computes turnover as the
-absolute change in position, and charges `turnover × cost_rate`. The two tables above
-are the same function called with `cost_rate = 0` and `cost_rate > 0`.
-
-The threshold is the one lever that matters once costs are real: raising it from 0 to
-0.6 cuts turnover sharply, which is why the cost-charged line in the backtest above
-uses it. Trading every marginal signal is what destroys the other four models.
 
 ---
 
