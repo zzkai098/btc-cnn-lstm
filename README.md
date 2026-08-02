@@ -18,17 +18,26 @@ while every other model turns negative.
 
 ## Contents
 
-[Results](#results) · [Data](#data) · [Feature pipeline](#feature-pipeline) ·
-[CNN–LSTM architecture](#cnnlstm-architecture) · [Signal and backtest](#signal-and-backtest) ·
-[Running it](#running-it) · [Layout](#layout) · [Limitations](#limitations)
+[Results](#results) · [CNN–LSTM architecture](#cnnlstm-architecture) · [Feature pipeline](#feature-pipeline) ·
+[Data](#data) · [Signal and backtest](#signal-and-backtest) · [Running it](#running-it) · [Layout](#layout) · [Limitations](#limitations)
 
 ---
 
 ## Results
 
-Every model is evaluated on the same out-of-sample minute-level window, from a
-single merged signals file, by `backtesting/backtesting_main.ipynb`. The benchmark
-is buy-and-hold BTC.
+Every model is evaluated on the same out-of-sample minute-level window — 14 days,
+about 20,000 minutes — from a single merged signals file, by
+`backtesting/backtesting_main.ipynb`. The benchmark is buy-and-hold BTC.
+
+![CNN–LSTM strategy backtest](docs/img/cnn_lstm_backtest.png)
+
+The whole argument of this project is in that chart. **Green** is the CNN–LSTM with
+no trading costs: +13.3% over the window, comfortably ahead of the **grey**
+buy-and-hold at +7.2%. **Blue** is the same model and the same predictions with a
+0.6 entry threshold and costs charged on turnover: +4.0%, now *behind* buy-and-hold.
+
+Nothing about the model changed between the green and blue lines. The entire gap is
+execution cost, and at minute frequency that gap is larger than the edge.
 
 **Frictionless (`cost_rate = 0`)**
 
@@ -64,73 +73,6 @@ Two things are worth reading carefully:
 
 Directional accuracy on the CNN–LSTM: **52.91% win rate** on t+30m, against 52.05%
 for XGBoost and 45.9% for the linear models.
-
----
-
-## Data
-
-Minute-level OHLCV for BTC/USD, aligned against ETH/USD, EUR/USD, GLD, SPY and VIXY.
-Crypto trades 24/7 while the traditional assets do not, so `data_processing/data_loader.py`
-aligns everything to the BTC timeline, converts to US/Eastern, fills the traditional
-assets only inside their own sessions, and emits a validity mask per asset rather
-than silently interpolating across a closed market.
-
-**The CSVs are not in this repository** — they are large and gitignored. The
-notebooks expect them under `data/`:
-
-```
-data/btcusd_1-min_data.csv
-data/ETH_USD_1min_2020_2025.csv
-data/SPY_1min_2020_2025.csv
-data/EUR_USD_1min_2020_2025.csv
-data/GLD_1min_2020_2025.csv
-data/VIXY_1min_2020_2025.csv
-```
-
-The two model families use different history windows: ARIMA and the linear models
-load from 2020, the CNN–LSTM and XGBoost from 2025. The final backtest re-aligns
-every model's signals onto one common index, so the comparison above is still
-same-period.
-
----
-
-## Feature pipeline
-
-Two feature sets exist, for two purposes.
-
-**`feature_engineering_icir/` — 29 hand-built microstructure factors** (momentum
-`MOM_3/5/10`, z-scored momentum, realised volatility `VOL_5/30/60`, volume ratios and
-similar), used for standalone IC/ICIR screening across ~346k rows.
-
-**`models/cnn_lstm/` — the model-facing pipeline**, which generates a much wider
-candidate set and then prunes it hard:
-
-| Stage | Features |
-|---|---:|
-| Generated — lags 1–30 on OHLCV and 5 external assets, SMA/EMA ×5, MACD, RSI ×3, VWAP + dispersion, candle geometry, volume dynamics, RSI slope | **133** |
-| Pass IC or MI threshold (`abs(IC) > 0.01` or `MI > 0.005`) | **72** |
-| After redundancy pruning (drop the lower-IC side of any pair with \|corr\| > 0.90) | **7** |
-
-Selection uses three complementary criteria, in `LstmFactorAnalyzer`:
-
-- **IC / ICIR** — Spearman rank IC against the target, plus a 500-period rolling IC
-  whose mean/std gives ICIR, so a factor is judged on stability rather than only on
-  average correlation.
-- **Mutual information** — catches non-linear dependence that rank correlation
-  misses.
-- **Redundancy pruning** — between two features correlated above 0.90, the one with
-  the weaker \|IC\| is dropped.
-
-Cutting 133 candidates to 7 is the point, not an accident: at minute frequency most
-engineered features are near-duplicates of one another, and handing all of them to a
-sequence model mostly buys overfitting.
-
-**Target construction** matters as much as the features. The label is a forward
-30-minute cumulative log return, then **divided by trailing realised volatility**
-(30-period, shifted one bar), winsorised at the 1st/99th percentiles, and passed
-through a `RobustScaler`. Volatility-normalising the target stops calm and turbulent
-regimes from being weighted as though a 5 bp move meant the same thing in both. Every
-rolling statistic is shifted before use, so no feature sees its own bar.
 
 ---
 
@@ -192,6 +134,86 @@ width, depth, dropout, batch size and sequence length. Best configuration:
 Training uses ~346k sequences with ~20k held out. The split is chronological and
 never shuffled, so no future bar can leak into training.
 
+![training and validation loss](docs/img/training_loss.png)
+
+Worth being honest about this curve. Training loss falls steadily while **validation
+loss stays flat and noisy** — the model is fitting the training set without opening
+a meaningful gap on held-out data. That is the expected picture for minute-level
+return prediction, where the signal-to-noise ratio is tiny, and it is consistent with
+what the backtest shows: a 52.91% win rate is a real edge over a coin flip, but a
+thin one. A curve that dropped cleanly on both lines at this frequency would be more
+likely to indicate leakage than skill.
+
+(The hyperparameter-search log and this run report loss on different scales, so
+7.923 above and the ~84 here are not directly comparable numbers.)
+
+---
+
+## Feature pipeline
+
+Two feature sets exist, for two purposes.
+
+**`feature_engineering_icir/` — 29 hand-built microstructure factors** (momentum
+`MOM_3/5/10`, z-scored momentum, realised volatility `VOL_5/30/60`, volume ratios and
+similar), used for standalone IC/ICIR screening across ~346k rows.
+
+**`models/cnn_lstm/` — the model-facing pipeline**, which generates a much wider
+candidate set and then prunes it hard:
+
+| Stage | Features |
+|---|---:|
+| Generated — lags 1–30 on OHLCV and 5 external assets, SMA/EMA ×5, MACD, RSI ×3, VWAP + dispersion, candle geometry, volume dynamics, RSI slope | **133** |
+| Pass IC or MI threshold (`abs(IC) > 0.01` or `MI > 0.005`) | **72** |
+| After redundancy pruning (drop the lower-IC side of any pair with \|corr\| > 0.90) | **7** |
+
+Selection uses three complementary criteria, in `LstmFactorAnalyzer`:
+
+- **IC / ICIR** — Spearman rank IC against the target, plus a 500-period rolling IC
+  whose mean/std gives ICIR, so a factor is judged on stability rather than only on
+  average correlation.
+- **Mutual information** — catches non-linear dependence that rank correlation
+  misses.
+- **Redundancy pruning** — between two features correlated above 0.90, the one with
+  the weaker \|IC\| is dropped.
+
+Cutting 133 candidates to 7 is the point, not an accident: at minute frequency most
+engineered features are near-duplicates of one another, and handing all of them to a
+sequence model mostly buys overfitting.
+
+**Target construction** matters as much as the features. The label is a forward
+30-minute cumulative log return, then **divided by trailing realised volatility**
+(30-period, shifted one bar), winsorised at the 1st/99th percentiles, and passed
+through a `RobustScaler`. Volatility-normalising the target stops calm and turbulent
+regimes from being weighted as though a 5 bp move meant the same thing in both. Every
+rolling statistic is shifted before use, so no feature sees its own bar.
+
+---
+
+## Data
+
+Minute-level OHLCV for BTC/USD, aligned against ETH/USD, EUR/USD, GLD, SPY and VIXY.
+Crypto trades 24/7 while the traditional assets do not, so `data_processing/data_loader.py`
+aligns everything to the BTC timeline, converts to US/Eastern, fills the traditional
+assets only inside their own sessions, and emits a validity mask per asset rather
+than silently interpolating across a closed market.
+
+**The CSVs are not in this repository** — they are large and gitignored. The
+notebooks expect them under `data/`:
+
+```
+data/btcusd_1-min_data.csv
+data/ETH_USD_1min_2020_2025.csv
+data/SPY_1min_2020_2025.csv
+data/EUR_USD_1min_2020_2025.csv
+data/GLD_1min_2020_2025.csv
+data/VIXY_1min_2020_2025.csv
+```
+
+The two model families use different history windows: ARIMA and the linear models
+load from 2020, the CNN–LSTM and XGBoost from 2025. The final backtest re-aligns
+every model's signals onto one common index, so the comparison above is still
+same-period.
+
 ---
 
 ## Signal and backtest
@@ -200,10 +222,16 @@ Predictions are continuous, so they are squashed through `tanh` into a position 
 `[-1, 1]`: the sign gives direction and the magnitude gives conviction, so position
 size scales with confidence instead of flipping between fully long and fully short.
 
+![trade signals](docs/img/trade_signals.png)
+
 `backtest_strategy` then applies an optional entry threshold (trade only when
 `|signal| > threshold`, suppressing low-conviction churn), computes turnover as the
 absolute change in position, and charges `turnover × cost_rate`. The two tables above
 are the same function called with `cost_rate = 0` and `cost_rate > 0`.
+
+The threshold is the one lever that matters once costs are real: raising it from 0 to
+0.6 cuts turnover sharply, which is why the cost-charged line in the backtest above
+uses it. Trading every marginal signal is what destroys the other four models.
 
 ---
 
